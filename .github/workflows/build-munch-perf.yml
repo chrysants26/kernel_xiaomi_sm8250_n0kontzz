@@ -1,0 +1,394 @@
+name: Performance Kernel Build (Munch - Poco F4)
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_TREE:
+        description: "Kernel Tree URL"
+        default: "https://github.com/bimoalfarrabi/kernel_xiaomi_sm8250_n0kontzz"
+        required: true
+      KERNEL_TREE_BRANCH:
+        description: "Kernel Tree Branch"
+        required: true
+        default: "base"
+
+      KERNELSU_SETUP_URL:
+        description: "KernelSU setup.sh URL (leave empty to disable)"
+        required: false
+        default: "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh"
+      KERNELSU_SETUP_BRANCH:
+        description: "KernelSU Branch"
+        required: false
+        default: "legacy"
+      KERNELSU_PATCHES:
+        description: "Patches for KernelSU (comma-separated .patch URLs)"
+        required: false
+        default: ""
+
+      ANYKERNEL_URL:
+        description: "AnyKernel3 URL"
+        default: "https://github.com/bimoalfarrabi/AKmunch"
+        required: false
+      ANYKERNEL_BRANCH:
+        description: "AnyKernel Branch"
+        default: "main"
+        required: false
+      ANYKERNEL_ZIP_NAME:
+        description: "Output ZIP name (without .zip)"
+        default: "N0Kontzzz-Perf-munch"
+        required: false
+
+      CLANG_TOOLCHAIN:
+        description: "Clang Toolchain"
+        required: true
+        default: "neutron"
+        type: choice
+        options:
+          - neutron
+          - aosp clang 20
+          - aosp clang 21
+
+      ENABLE_THINLTO:
+        description: "Enable ThinLTO (Link-Time Optimization)"
+        required: false
+        default: true
+        type: boolean
+
+      ENABLE_POLLY:
+        description: "Enable Polly optimizer (LLVM)"
+        required: false
+        default: true
+        type: boolean
+
+      TIMER_HZ:
+        description: "Timer frequency (300=balanced, 1000=max perf)"
+        required: false
+        default: "300"
+        type: choice
+        options:
+          - "300"
+          - "1000"
+
+      CPU_GOVERNOR:
+        description: "Default CPU governor"
+        required: false
+        default: "performance"
+        type: choice
+        options:
+          - performance
+          - schedutil
+
+jobs:
+  cache_clang:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cache Clang Toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: |
+            clang-neutron
+            clang-aosp-20
+            clang-aosp-21
+          key: clang-toolchain-${{ github.event.inputs.CLANG_TOOLCHAIN }}-${{ hashFiles('**/clang-version') }}
+          restore-keys: |
+            clang-toolchain-${{ github.event.inputs.CLANG_TOOLCHAIN }}-
+
+      - name: Download & Extract Clang (If not cached)
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          if [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 20" ]]; then
+            wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -O clang.tar.gz
+            mkdir -p clang-aosp-20
+            tar -xf clang.tar.gz -C clang-aosp-20
+            echo "aosp-20-r547379" > clang-version
+          elif [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 21" ]]; then
+            wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/508ea7dd0d8f681904d0422e98af9613aaabf180/clang-r574158.tar.gz -O clang.tar.gz
+            mkdir -p clang-aosp-21
+            tar -xf clang.tar.gz -C clang-aosp-21
+            echo "aosp-21-r574158" > clang-version
+          else
+            wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst -O clang.tar.zst
+            mkdir -p clang-neutron
+            unzstd -d clang.tar.zst
+            tar -xf clang.tar -C clang-neutron
+            echo "neutron-10032024" > clang-version
+          fi
+
+  build:
+    needs: cache_clang
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Display Build Configuration
+        run: |
+          echo "::group::Performance Build Configuration"
+          echo "Kernel Tree: ${{ github.event.inputs.KERNEL_TREE }}/tree/${{ github.event.inputs.KERNEL_TREE_BRANCH }}"
+          echo "KernelSU: ${{ github.event.inputs.KERNELSU_SETUP_URL != '' && 'Enabled' || 'Disabled' }}"
+          echo "Clang: ${{ github.event.inputs.CLANG_TOOLCHAIN }}"
+          echo "ThinLTO: ${{ github.event.inputs.ENABLE_THINLTO }}"
+          echo "Polly: ${{ github.event.inputs.ENABLE_POLLY }}"
+          echo "Timer Freq: ${{ github.event.inputs.TIMER_HZ }}Hz"
+          echo "CPU Governor: ${{ github.event.inputs.CPU_GOVERNOR }}"
+          echo "AnyKernel: ${{ github.event.inputs.ANYKERNEL_URL }}/tree/${{ github.event.inputs.ANYKERNEL_BRANCH }}"
+          echo "::endgroup::"
+
+      - name: Restore Clang Toolchain Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            clang-neutron
+            clang-aosp-20
+            clang-aosp-21
+          key: clang-toolchain-${{ github.event.inputs.CLANG_TOOLCHAIN }}-${{ hashFiles('**/clang-version') }}
+          restore-keys: |
+            clang-toolchain-${{ github.event.inputs.CLANG_TOOLCHAIN }}-
+
+      - name: Set Clang Path
+        run: |
+          if [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 20" ]]; then
+            echo "CLANG_PATH=$(pwd)/clang-aosp-20/bin" >> $GITHUB_ENV
+          elif [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 21" ]]; then
+            echo "CLANG_PATH=$(pwd)/clang-aosp-21/bin" >> $GITHUB_ENV
+          else
+            echo "CLANG_PATH=$(pwd)/clang-neutron/bin" >> $GITHUB_ENV
+          fi
+
+      - name: Initialize workspace
+        id: workspace
+        run: |
+          echo "tools_folder=$(pwd)" >> "$GITHUB_OUTPUT"
+          git clone --depth=1 "${{ github.event.inputs.KERNEL_TREE }}" -b "${{ github.event.inputs.KERNEL_TREE_BRANCH }}" kernel_tree
+          echo "kernel_folder=$(pwd)/kernel_tree" >> "$GITHUB_OUTPUT"
+
+      - name: Apply Performance Optimizations
+        working-directory: ${{ steps.workspace.outputs.kernel_folder }}
+        run: |
+          set -e
+          DEFCONFIG="arch/arm64/configs/vendor/munch_defconfig"
+
+          echo "Applying performance optimizations to munch_defconfig..."
+
+          # ===== CPU Governor =====
+          if [[ "${{ github.event.inputs.CPU_GOVERNOR }}" == "performance" ]]; then
+            sed -i 's/CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y/# CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL is not set/' "$DEFCONFIG"
+            echo "CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE=y" >> "$DEFCONFIG"
+          fi
+
+          # ===== Timer Frequency =====
+          HZ="${{ github.event.inputs.TIMER_HZ }}"
+          echo "Setting timer frequency to ${HZ}Hz..."
+          sed -i 's/CONFIG_HZ_[0-9]*=y/# CONFIG_HZ_OLD is not set/' "$DEFCONFIG"
+          sed -i "s/CONFIG_HZ=.*/CONFIG_HZ=${HZ}/" "$DEFCONFIG"
+          echo "CONFIG_HZ_${HZ}=y" >> "$DEFCONFIG"
+
+          # ===== Full Preemption =====
+          echo "Enabling full preemption..."
+          sed -i 's/CONFIG_PREEMPT_NONE=y/# CONFIG_PREEMPT_NONE is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_PREEMPT_VOLUNTARY=y/# CONFIG_PREEMPT_VOLUNTARY is not set/' "$DEFCONFIG"
+          echo "CONFIG_PREEMPT=y" >> "$DEFCONFIG"
+
+          # ===== Disable Debug =====
+          echo "Disabling kernel debug options..."
+          sed -i 's/CONFIG_DEBUG_KERNEL=y/# CONFIG_DEBUG_KERNEL is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_INFO=y/# CONFIG_DEBUG_INFO is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_PREEMPT=y/# CONFIG_DEBUG_PREEMPT is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_SPINLOCK=y/# CONFIG_DEBUG_SPINLOCK is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_MUTEXES=y/# CONFIG_DEBUG_MUTEXES is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_ATOMIC_SLEEP=y/# CONFIG_DEBUG_ATOMIC_SLEEP is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_LIST=y/# CONFIG_DEBUG_LIST is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_BUGVERBOSE=y/# CONFIG_DEBUG_BUGVERBOSE is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_FTRACE=y/# CONFIG_FTRACE is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_FUNCTION_TRACER=y/# CONFIG_FUNCTION_TRACER is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_IRQSOFF_TRACER=y/# CONFIG_IRQSOFF_TRACER is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_SCHED_TRACER=y/# CONFIG_SCHED_TRACER is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_BLK_DEV_IO_TRACE=y/# CONFIG_BLK_DEV_IO_TRACE is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_KPROBES=y/# CONFIG_KPROBES is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_KASAN=y/# CONFIG_KASAN is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_STACK_TRACER=y/# CONFIG_STACK_TRACER is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_RODATA=y/# CONFIG_DEBUG_RODATA is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_OBJECTS=y/# CONFIG_DEBUG_OBJECTS is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEBUG_KMEMLEAK=y/# CONFIG_DEBUG_KMEMLEAK is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_PROVE_LOCKING=y/# CONFIG_PROVE_LOCKING is not set/' "$DEFCONFIG"
+
+          # ===== TCP BBR =====
+          echo "Enabling BBR TCP congestion control..."
+          echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+          sed -i 's/CONFIG_DEFAULT_TCP_CONG="cubic"/CONFIG_DEFAULT_TCP_CONG="bbr"/' "$DEFCONFIG"
+          sed -i 's/CONFIG_DEFAULT_TCP_CONG="reno"/CONFIG_DEFAULT_TCP_CONG="bbr"/' "$DEFCONFIG"
+
+          # ===== LZ4 Kernel Compression =====
+          echo "Setting LZ4 kernel compression..."
+          sed -i 's/CONFIG_KERNEL_GZIP=y/# CONFIG_KERNEL_GZIP is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_KERNEL_LZMA=y/# CONFIG_KERNEL_LZMA is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_KERNEL_XZ=y/# CONFIG_KERNEL_XZ is not set/' "$DEFCONFIG"
+          sed -i 's/CONFIG_KERNEL_LZO=y/# CONFIG_KERNEL_LZO is not set/' "$DEFCONFIG"
+          echo "CONFIG_KERNEL_LZ4=y" >> "$DEFCONFIG"
+
+          # ===== I/O Schedulers =====
+          echo "Enabling performance I/O schedulers..."
+          echo "CONFIG_IOSCHED_FIOPS=y" >> "$DEFCONFIG"
+          echo "CONFIG_IOSCHED_MAPLE=y" >> "$DEFCONFIG"
+          echo "CONFIG_IOSCHED_SIO=y" >> "$DEFCONFIG"
+          echo "CONFIG_IOSCHED_KYBER=y" >> "$DEFCONFIG"
+
+          # ===== Jump Label Optimization =====
+          echo "CONFIG_JUMP_LABEL=y" >> "$DEFCONFIG"
+
+          # ===== Block Layer =====
+          echo "CONFIG_BLK_WBT=y" >> "$DEFCONFIG"
+          echo "CONFIG_BLK_WBT_MQ=y" >> "$DEFCONFIG"
+
+          # ===== Disable Magic SysRq =====
+          sed -i 's/CONFIG_MAGIC_SYSRQ=y/# CONFIG_MAGIC_SYSRQ is not set/' "$DEFCONFIG"
+
+          # ===== Remove duplicate configs (keep last occurrence) =====
+          tac "$DEFCONFIG" | awk '!seen[$0]++' | tac > "${DEFCONFIG}.tmp"
+          mv "${DEFCONFIG}.tmp" "$DEFCONFIG"
+
+          echo "Performance optimizations applied successfully!"
+
+      - name: Setup KernelSU
+        if: github.event.inputs.KERNELSU_SETUP_URL != '' && github.event.inputs.KERNELSU_SETUP_BRANCH != ''
+        working-directory: ${{ steps.workspace.outputs.kernel_folder }}
+        run: |
+          curl -LSs "${{ github.event.inputs.KERNELSU_SETUP_URL }}" | bash -s ${{ github.event.inputs.KERNELSU_SETUP_BRANCH }}
+          if [ -n "${{ github.event.inputs.KERNELSU_PATCHES }}" ]; then
+            cd Kernel*
+            echo "${{ github.event.inputs.KERNELSU_PATCHES }}" | tr ',' '\n' | while read -r PATCH; do
+              TRIMMED=$(echo "$PATCH" | xargs)
+              TEMP_PATCH_FILE="/tmp/downloaded_patch_$(date +%s%N).patch"
+              curl -fsSL "$TRIMMED" -o "$TEMP_PATCH_FILE"
+              patch -p1 < "$TEMP_PATCH_FILE"
+            done
+            cd ..
+          fi
+
+      - name: Build Kernel
+        id: build
+        working-directory: ${{ steps.workspace.outputs.kernel_folder }}
+        run: |
+          set -e
+          export ARCH=arm64
+          export SUBARCH=ARM64
+          export KBUILD_BUILD_USER="perf-build"
+          export KBUILD_BUILD_HOST="github-actions"
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+
+          # Performance compiler flags
+          export KCFLAGS="-O3 -march=armv8.2-a+crypto+fp16+dotprod -mtune=cortex-a77"
+
+          # ThinLTO flags
+          if [[ "${{ github.event.inputs.ENABLE_THINLTO }}" == "true" ]]; then
+            export LDFLAGS_MODULE="-Tthinlto"
+            export KCFLAGS="${KCFLAGS} -fthin-lto"
+          fi
+
+          # Polly optimizer
+          if [[ "${{ github.event.inputs.ENABLE_POLLY }}" == "true" ]]; then
+            export KCFLAGS="${KCFLAGS} -mllvm -polly -mllvm -polly-vectorizer=stripmine"
+          fi
+
+          echo "KCFLAGS: $KCFLAGS"
+
+          # Generate config
+          make O=out vendor/munch_defconfig
+
+          # Build kernel
+          make O=out \
+            CC=clang \
+            -j$(nproc --all) \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            2>&1 | tee build.log
+
+          # Check if build succeeded
+          if [ ! -f "out/arch/arm64/boot/Image.gz" ]; then
+            echo "ERROR: Kernel build failed - Image.gz not found"
+            exit 1
+          fi
+
+          echo "Kernel build completed successfully!"
+
+      - name: Upload Image.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image.gz
+          path: ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/Image.gz
+
+      - name: Upload dtb
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtb
+          path: ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/dtb.img
+
+      - name: Upload dtbo.img
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtbo.img
+          path: ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/dtbo.img
+
+      - name: Package with AnyKernel3
+        if: success() && github.event.inputs.ANYKERNEL_URL != '' && github.event.inputs.ANYKERNEL_BRANCH != ''
+        id: ak3
+        working-directory: ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/
+        run: |
+          set -e
+          git clone --recursive --depth=1 ${{ github.event.inputs.ANYKERNEL_URL }} -b ${{ github.event.inputs.ANYKERNEL_BRANCH }} AnyKernel3
+
+          [ -e "Image.gz" ] && cp -f Image.gz AnyKernel3
+          [ -e "dtb.img" ] && cp -f dtb.img AnyKernel3/dtb
+          [ -e "dtbo.img" ] && cp -f dtbo.img AnyKernel3
+
+          cd AnyKernel3
+
+          # Customize AnyKernel3 info for performance build
+          if [ -f "anykernel-info" ]; then
+            sed -i "s/kernel.string=.*/kernel.string=N0Kontzzz-Perf (Performance Optimized)/" anykernel-info
+          fi
+
+          ZIP_NAME="${{ github.event.inputs.ANYKERNEL_ZIP_NAME }}"
+          ZIP_NAME="${ZIP_NAME}-HZ${{ github.event.inputs.TIMER_HZ }}"
+          ZIP_NAME="${ZIP_NAME}-${{ github.event.inputs.CPU_GOVERNOR }}"
+
+          if [[ "${{ github.event.inputs.KERNELSU_SETUP_URL }}" != "" ]]; then
+            ZIP_NAME="${ZIP_NAME}-KSU"
+          else
+            ZIP_NAME="${ZIP_NAME}-NONKSU"
+          fi
+
+          zip -q -r "${ZIP_NAME}.zip" *
+          mv "${ZIP_NAME}.zip" ../
+          cd ..
+
+          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Built: ${ZIP_NAME}.zip"
+
+      - name: Upload AnyKernel ZIP
+        uses: actions/upload-artifact@v4
+        if: success() && github.event.inputs.ANYKERNEL_URL != '' && github.event.inputs.ANYKERNEL_BRANCH != ''
+        with:
+          name: ${{ steps.ak3.outputs.zip_name }}
+          path: |
+            ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/${{ steps.ak3.outputs.zip_name }}.zip
+
+      - name: Build Summary
+        if: always()
+        run: |
+          echo "## Performance Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Device | Poco F4 (munch) |" >> $GITHUB_STEP_SUMMARY
+          echo "| SoC | Snapdragon 870 (SM8250-AC) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | ${{ github.event.inputs.KERNEL_TREE_BRANCH }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Clang | ${{ github.event.inputs.CLANG_TOOLCHAIN }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ThinLTO | ${{ github.event.inputs.ENABLE_THINLTO }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Polly | ${{ github.event.inputs.ENABLE_POLLY }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Timer Freq | ${{ github.event.inputs.TIMER_HZ }}Hz |" >> $GITHUB_STEP_SUMMARY
+          echo "| CPU Governor | ${{ github.event.inputs.CPU_GOVERNOR }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| KernelSU | ${{ github.event.inputs.KERNELSU_SETUP_URL != '' && 'Enabled' || 'Disabled' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Compiler Flags | -O3 -march=armv8.2-a+crypto+fp16+dotprod |" >> $GITHUB_STEP_SUMMARY
