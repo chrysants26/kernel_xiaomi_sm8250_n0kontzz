@@ -68,7 +68,7 @@ log_step "Installing dependencies..."
 sudo apt-get update -qq
 sudo apt-get install -y -qq \
     build-essential git gcc-aarch64-linux-gnu bison flex \
-    libelf-dev libssl-dev bc python3 zstd curl wget zip unzip \
+    libelf-dev libssl-dev bc python3 python-is-python3 zstd curl wget zip unzip \
     ccache > /dev/null 2>&1
 
 # ===== SETUP WORKSPACE =====
