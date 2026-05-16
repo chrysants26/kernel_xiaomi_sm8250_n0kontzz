@@ -255,11 +255,11 @@ if [[ "${SUSFS_ENABLED}" == "true" ]]; then
     fi
 
     # Add SuSFS config to defconfig
-    echo "CONFIG_KSU_SUSFS=y" >> "arch/arm64/configs/vendor/${DEFCONFIG_NAME}"
-    echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "arch/arm64/configs/vendor/${DEFCONFIG_NAME}"
-    echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "arch/arm64/configs/vendor/${DEFCONFIG_NAME}"
-    echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "arch/arm64/configs/vendor/${DEFCONFIG_NAME}"
-    echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "arch/arm64/configs/vendor/${DEFCONFIG_NAME}"
+    echo "CONFIG_KSU_SUSFS=y" >> "${DEFCONFIG}"
+    echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "${DEFCONFIG}"
+    echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "${DEFCONFIG}"
+    echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "${DEFCONFIG}"
+    echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "${DEFCONFIG}"
 
     # Clean up
     rm -rf susfs4ksu
